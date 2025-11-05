@@ -8,6 +8,7 @@
 #include <format>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 
 int main(int argc, char* argv[])
 {
@@ -60,24 +61,24 @@ int main(int argc, char* argv[])
 	std::cout << std::format("loaded volume ({}x{}x{}@{}bpv)\n", volume_w, volume_h, volume_d, bits_per_voxel);
 	
 	// Select sampling function
-	std::function<f32(u32, u32, u32)> sample;
+        std::function<f32(u32, u32, u32)> raw_sample;
         if (bits_per_voxel == 8)
         {
-                sample = [=, vu8 = reinterpret_cast<const u8*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
+                raw_sample = [=, vu8 = reinterpret_cast<const u8*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
                 {
                         return vu8[x + volume_w * (y + volume_h * z)];
                 };
         }
         else if (bits_per_voxel == 16)
         {
-                sample = [=, vu16 = reinterpret_cast<const u16*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
+                raw_sample = [=, vu16 = reinterpret_cast<const u16*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
                 {
                         return vu16[x + volume_w * (y + volume_h * z)];
                 };
         }
         else if (bits_per_voxel == 32)
         {
-                sample = [=, vf32 = reinterpret_cast<const f32*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
+                raw_sample = [=, vf32 = reinterpret_cast<const f32*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
                 {
                         return vf32[x + volume_w * (y + volume_h * z)];
                 };
@@ -87,14 +88,37 @@ int main(int argc, char* argv[])
                 std::cerr << "unsupported voxel size" << std::endl;
                 return 1;
         }
-	
-	// Extract isosurface
-	std::vector<vertex> vertices;
-	std::vector<triangle> triangles;
-	try
-	{
-		polygonize(isolevel, sample, volume_w, volume_h, volume_d, vertices, triangles);
-	}
+
+        const u32 padded_w = volume_w + 2;
+        const u32 padded_h = volume_h + 2;
+        const u32 padded_d = volume_d + 2;
+        std::vector<f32> padded_voxels(static_cast<std::size_t>(padded_w) * padded_h * padded_d, 0.0f);
+
+        for (u32 z = 0; z < volume_d; ++z)
+        {
+                for (u32 y = 0; y < volume_h; ++y)
+                {
+                        for (u32 x = 0; x < volume_w; ++x)
+                        {
+                                const auto padded_index =
+                                        (x + 1) + padded_w * ((y + 1) + padded_h * (z + 1));
+                                padded_voxels[padded_index] = raw_sample(x, y, z);
+                        }
+                }
+        }
+
+        const auto sample = [&, padded_w, padded_h](u32 x, u32 y, u32 z) -> f32
+        {
+                return padded_voxels[x + padded_w * (y + padded_h * z)];
+        };
+
+        // Extract isosurface
+        std::vector<vertex> vertices;
+        std::vector<triangle> triangles;
+        try
+        {
+                polygonize(isolevel, sample, padded_w, padded_h, padded_d, vertices, triangles);
+        }
 	catch (const std::exception& e)
 	{
 		std::cerr << std::format("failed to extract isosurface: {}\n", e.what());
