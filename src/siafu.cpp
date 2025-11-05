@@ -3,6 +3,8 @@
 
 #include "siafu.hpp"
 #include "config.hpp"
+#include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <format>
@@ -58,6 +60,44 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 	std::cout << std::format("loaded volume ({}x{}x{}@{}bpv)\n", volume_w, volume_h, volume_d, bits_per_voxel);
+	
+	// Pad the volume with a one-voxel border so the extracted surface is watertight
+	const std::size_t bytes_per_voxel = bits_per_voxel >> 3;
+	if (bytes_per_voxel == 0)
+	{
+		std::cerr << "unsupported voxel format\n";
+		return 1;
+	}
+	
+	const u32 padded_w = volume_w + 2;
+	const u32 padded_h = volume_h + 2;
+	const u32 padded_d = volume_d + 2;
+	const std::size_t padded_slice_size = static_cast<std::size_t>(padded_w) * padded_h * bytes_per_voxel;
+	const std::size_t padded_volume_size = padded_slice_size * padded_d;
+	
+	auto padded_voxels = std::make_unique<std::byte[]>(padded_volume_size);
+	std::fill_n(padded_voxels.get(), padded_volume_size, std::byte{0});
+	
+	const std::size_t slice_size_bytes = static_cast<std::size_t>(volume_w) * volume_h * bytes_per_voxel;
+	for (u32 z = 0; z < volume_d; ++z)
+	{
+		const auto* src_slice = voxels.get() + slice_size_bytes * z;
+		auto* dst_slice = padded_voxels.get() + padded_slice_size * (z + 1);
+	
+		for (u32 y = 0; y < volume_h; ++y)
+		{
+			const auto* src_row = src_slice + static_cast<std::size_t>(y) * volume_w * bytes_per_voxel;
+			auto* dst_row = dst_slice + (static_cast<std::size_t>(y + 1) * padded_w + 1) * bytes_per_voxel;
+			std::memcpy(dst_row, src_row, static_cast<std::size_t>(volume_w) * bytes_per_voxel);
+		}
+	}
+	
+	voxels = std::move(padded_voxels);
+	volume_w = padded_w;
+	volume_h = padded_h;
+	volume_d = padded_d;
+	
+	std::cout << std::format("padded volume to {}x{}x{} voxels\n", volume_w, volume_h, volume_d);
 	
 	// Select sampling function
 	std::function<f32(u32, u32, u32)> sample;
