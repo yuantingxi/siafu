@@ -93,9 +93,9 @@ void polygonize
 );
 
 /**
- * Loads a 3D volume from a sequence of TIFF files.
+ * Loads a 3D volume from a density file.
  *
- * @param[in] path Path to the volume directory.
+ * @param[in] path Path to the density file.
  * @param[out] width Volume width, in voxels.
  * @param[out] height Volume height, in voxels.
  * @param[out] depth Volume depth, in voxels.

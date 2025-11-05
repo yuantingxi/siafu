@@ -12,6 +12,6 @@ inline constexpr std::string_view siafu_version_string = "siafu v@PROJECT_VERSIO
 /// Siafu help string.
 inline constexpr std::string_view siafu_help_string =
 	"usage: siafu [--version] [--help]\n"
-	"             <volume_path> <isolevel> <output_file>";
+        "             <density_file> <isolevel> <output_file>";
 
 #endif // CONFIG_HPP

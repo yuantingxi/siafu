@@ -4,6 +4,7 @@
 #include "siafu.hpp"
 #include <cmath>
 #include <memory>
+#include <cstring>
 
 namespace
 {
