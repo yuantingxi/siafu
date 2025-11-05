@@ -8,7 +8,7 @@ SPDX-License-Identifier: CC0-1.0
 [![build](https://github.com/cjhoward/siafu/actions/workflows/build.yml/badge.svg)](https://github.com/cjhoward/siafu/actions/workflows/build.yml)
 [![code quality](https://app.codacy.com/project/badge/Grade/23dc62d0303f4d20a8f15ec8d6a1eea2)](https://app.codacy.com/gh/cjhoward/siafu/dashboard)
 
-Siafu is a tiny utility program for extracting isosurfaces from volumetric data. The program loads a 3D volume from a sequence of uncompressed TIFF files, extracts an isosurface using the marching cubes algorithm[^1], and outputs a model in `.ply`, `.obj`, or `.stl` format. Siafu is written in C++23 with zero dependencies.
+Siafu is a tiny utility program for extracting isosurfaces from volumetric data. The program loads a 3D volume from a density file (one sample per line with `x`, `y`, `z`, and density values), extracts an isosurface using the marching cubes algorithm[^1], and outputs a model in `.ply`, `.obj`, or `.stl` format. Siafu is written in C++23 with zero dependencies.
 
 ## Table of Contents
 
@@ -30,10 +30,10 @@ cmake --build build --config Release --target install
 
 ```bash
 usage: siafu [--version] [--help]
-             <volume_path> <isolevel> <output_file>
+             <density_file> <isolevel> <output_file>
 ```
 
--   `volume_path`: Path to a sequence of uncompressed TIFF files.
+-   `density_file`: Path to a text file where each non-empty line contains four whitespace-separated numbers: `x`, `y`, `z`, and the corresponding density value.
 -   `isolevel`: Threshold value for isosurface extraction.
 -   `output_file`: Output file path and format. Supported file formats include `.ply`, `.obj`, and `.stl`. If the output file extension is unrecognized, the `.ply` format will be used.
 
@@ -44,16 +44,16 @@ usage: siafu [--version] [--help]
 
 ### Examples
 
-Load a volume from the `data/ant` directory, extract an isosurface at isolevel `500`, and save the isosurface as `ant.ply`:
+Load a volume from `data/ant.txt`, extract an isosurface at isolevel `500`, and save the isosurface as `ant.ply`:
 
 ```bash
-siafu data/ant 500 ant.ply
+siafu data/ant.txt 500 ant.ply
 ```
 
-Load a volume from the `C:\beetle` directory, extract an isosurface at isolevel `123.4`, and save the isosurface as `beetle.obj`:
+Load a volume from the density file `C:\beetle\samples.txt`, extract an isosurface at isolevel `123.4`, and save the isosurface as `beetle.obj`:
 
 ```bash
-siafu C:\beetle\001.tif 123.4 beetle.obj
+siafu C:\beetle\samples.txt 123.4 beetle.obj
 ```
 
 ## Contributing

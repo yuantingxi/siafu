@@ -2,229 +2,172 @@
 // SPDX-License-Identifier: MIT
 
 #include "siafu.hpp"
-#include <execution>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <fstream>
+#include <iterator>
 #include <ranges>
+#include <sstream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
-namespace tiff
+namespace
 {
-	/// TIFF header.
-	struct header
-	{
-		u16 byte_order;
-		u16 magic;
-		u32 ifd_offset;
-	};
-	
-	/// TIFF image file directory (IFD) entry.
-	struct ifd_entry
-	{
-		u16 tag;
-		u16 type;
-		u32 count;
-		u32 offset;
-	};
-	
-	/// TIFF header constants. @{
-	inline constexpr u16 little_endian = 0x4949;
-	inline constexpr u16 big_endian = 0x4d4d;
-	inline constexpr u16 magic = 42;
-	/// @}
-	
-	/// TIFF IFD entry constants. @{
-	inline constexpr u16 image_width = 0x0100;
-	inline constexpr u16 image_height = 0x0101;
-	inline constexpr u16 bits_per_sample = 0x0102;
-	inline constexpr u16 compression = 0x0103;
-	inline constexpr u16 strip_offsets = 0x0111;
-	inline constexpr u16 samples_per_pixel = 0x0115;
-	inline constexpr u16 rows_per_strip = 0x0116;
-	inline constexpr u16 strip_byte_counts = 0x0117;
-	inline constexpr u16 x_resolution = 0x011a;
-	inline constexpr u16 y_resolution = 0x011b;
-	inline constexpr u16 planar_config = 0x011c;
-	inline constexpr u16 resolution_unit = 0x0128;
-	inline constexpr u16 uncompressed = 1;
-	/// @}
-	
-	/// Returns a sequence of TIFF files in a directory.
-	[[nodiscard]] std::vector<fs::path> find_files(const fs::path& path)
-	{
-		std::vector<fs::path> files;
-		
-		if (fs::exists(path))
-		{
-			fs::path dir = fs::is_directory(path) ? path : path.has_parent_path() ? path.parent_path() : fs::current_path();
-			
-			for (const auto& entry : fs::directory_iterator(dir))
-			{
-				if (fs::is_regular_file(entry) && (entry.path().extension() == ".tif" || entry.path().extension() == ".tiff"))
-				{
-					files.push_back(entry.path());
-				}
-			}
-			
-			std::sort(files.begin(), files.end());
-		}
-		
-		return files;
-	}
+        constexpr double coordinate_epsilon = 1e-6;
+
+        struct density_sample
+        {
+                double x;
+                double y;
+                double z;
+                f32 density;
+        };
+
+        bool is_blank_or_comment(const std::string& line)
+        {
+                const auto first_non_space = std::find_if_not
+                (
+                        line.begin(),
+                        line.end(),
+                        [](unsigned char ch) { return std::isspace(ch); }
+                );
+
+                return first_non_space == line.end() || *first_non_space == '#';
+        }
+
+        template <class Getter>
+        std::vector<double> extract_axis_values(const std::vector<density_sample>& samples, Getter getter)
+        {
+                std::vector<double> axis_values;
+                axis_values.reserve(samples.size());
+
+                for (const auto& sample : samples)
+                {
+                        axis_values.push_back(getter(sample));
+                }
+
+                std::sort(axis_values.begin(), axis_values.end());
+                const auto unique_end = std::unique
+                (
+                        axis_values.begin(),
+                        axis_values.end(),
+                        [](double a, double b)
+                        {
+                                return std::abs(a - b) <= coordinate_epsilon;
+                        }
+                );
+                axis_values.erase(unique_end, axis_values.end());
+
+                return axis_values;
+        }
+
+        u32 find_axis_index(double value, const std::vector<double>& axis_values)
+        {
+                const auto lower = std::lower_bound
+                (
+                        axis_values.begin(),
+                        axis_values.end(),
+                        value - coordinate_epsilon
+                );
+
+                for (auto it = lower; it != axis_values.end(); ++it)
+                {
+                        if (std::abs(*it - value) <= coordinate_epsilon)
+                        {
+                                return static_cast<u32>(std::distance(axis_values.begin(), it));
+                        }
+
+                        if (*it > value + coordinate_epsilon)
+                        {
+                                break;
+                        }
+                }
+
+                throw std::runtime_error("density file contains coordinates that do not lie on a regular grid");
+        }
 }
 
 std::unique_ptr<std::byte[]> load_volume(const fs::path& path, u32& width, u32& height, u32& depth, u32& bits_per_voxel)
 {
-	const auto files = tiff::find_files(path);
-	if (files.empty())
-	{
-		throw std::runtime_error("file not found");
-	}
-	
-	// Open first TIFF file in the sequence
-	std::ifstream file(files.front(), std::ios::binary);
+        std::ifstream file(path);
+        if (!file.is_open())
+        {
+                throw std::runtime_error("failed to open file");
+        }
 
-	if (!file.is_open())
-	{
-		throw std::runtime_error("failed to open file");
-	}
-	
-	// Read the TIFF header
-	tiff::header header;
-	file.read(reinterpret_cast<char*>(&header), sizeof(header));
-	
-	// Check byte order
-	if (header.byte_order != tiff::little_endian && header.byte_order != tiff::big_endian)
-	{
-		throw std::runtime_error("unsupported byte order");
-	}
-	
-	bool native_endian = true;
-	if ((std::endian::native == std::endian::little) == (header.byte_order == tiff::big_endian))
-	{
-		native_endian = false;
-		header.magic = std::byteswap(header.magic);
-		header.ifd_offset = std::byteswap(header.ifd_offset);
-	}
+        std::vector<density_sample> samples;
+        std::string line;
+        while (std::getline(file, line))
+        {
+                if (is_blank_or_comment(line))
+                {
+                        continue;
+                }
 
-	// Check magic number
-	if (header.magic != tiff::magic)
-	{
-		throw std::runtime_error("invalid magic number");
-	}
-	
-	// Set the file position to the IFD offset
-	file.seekg(header.ifd_offset, std::ios::beg);
+                std::istringstream stream(line);
+                double x, y, z, density;
+                if (!(stream >> x >> y >> z >> density))
+                {
+                        throw std::runtime_error("failed to parse density file");
+                }
 
-	// Read IFD entry count
-	u16 ifd_entry_count;
-	file.read(reinterpret_cast<char*>(&ifd_entry_count), sizeof(u16));
-	if (!native_endian)
-	{
-		ifd_entry_count = std::byteswap(ifd_entry_count);
-	}
-	
-	// Read IFD entries
-	std::vector<tiff::ifd_entry> entries(ifd_entry_count);
-	file.read(reinterpret_cast<char*>(entries.data()), entries.size() * sizeof(tiff::ifd_entry));
-	if (!native_endian)
-	{
-		for (auto& entry: entries)
-		{
-			entry.tag = std::byteswap(entry.tag);
-			entry.type = std::byteswap(entry.type);
-			entry.count = std::byteswap(entry.count);
-			entry.offset = std::byteswap(entry.offset);
-		}
-	}
-	
-	width = 0;
-	height = 0;
-	depth = static_cast<u32>(files.size());
-	bits_per_voxel = 0; 
-	u32 compression = tiff::uncompressed;
-	u32 strips_offset = sizeof(header);
-	
-	// Process entries
-	for (const auto& entry: entries)
-	{
-		switch (entry.tag)
-		{
-			case tiff::image_width:
-				width = entry.offset;
-				break;
-			case tiff::image_height:
-				height = entry.offset;
-				break;
-			case tiff::bits_per_sample:
-				bits_per_voxel = entry.offset;
-				break;
-			case tiff::compression:
-				compression = entry.offset;
-				break;
-			case tiff::strip_offsets:
-				if (entry.count == 1)
-				{
-					strips_offset = entry.offset;
-				}
-				else
-				{
-					file.seekg(entry.offset, std::ios::beg);
-					file.read(reinterpret_cast<char*>(&strips_offset), sizeof(u32));
-				}
-				break;
-			default:
-				break;
-		}
-	}
-	
-	if (!width || !height)
-	{
-		throw std::runtime_error("image has invalid dimensions");
-	}
-	if (compression != tiff::uncompressed)
-	{
-		throw std::runtime_error("compressed images not supported");
-	}
-	
-	const std::size_t bytes_per_voxel = bits_per_voxel >> 3;
-	const std::size_t slice_size_bytes = width * height * bytes_per_voxel;
-	
-	// Allocate voxels
-	const std::size_t volume_size_bytes = slice_size_bytes * depth;
-	auto voxels = std::make_unique<std::byte[]>(volume_size_bytes);
-	
-	// Load first Z-slice
-	file.seekg(strips_offset, std::ios::beg);
-	file.read(reinterpret_cast<char*>(voxels.get()), slice_size_bytes);
-	file.close();
-	
-	// Load remaining Z-slices in parallel
-	const std::ranges::iota_view file_indices(std::size_t{1}, files.size());
-	std::for_each
-	(
-		std::execution::par_unseq,
-		file_indices.begin(),
-		file_indices.end(),
-		[&](std::size_t i)
-		{
-			std::ifstream file(files[i], std::ios::binary);
-			if (!file.is_open())
-			{
-				throw std::runtime_error("failed to open file");
-			}
-			
-			file.seekg(strips_offset, std::ios::beg);
-			file.read(reinterpret_cast<char*>(voxels.get()) + slice_size_bytes * i, slice_size_bytes);
-		}
-	);
-	
-	if (!native_endian && bytes_per_voxel > 1)
-	{
-		for (std::size_t i = 0; i < volume_size_bytes; i += bytes_per_voxel)
-		{
-			std::reverse(voxels.get() + i, voxels.get() + i + bytes_per_voxel);
-		}
-	}
-	
-	return voxels;
+                samples.push_back({x, y, z, static_cast<f32>(density)});
+        }
+
+        if (samples.empty())
+        {
+                throw std::runtime_error("density file is empty");
+        }
+
+        const auto axis_x = extract_axis_values(samples, [](const density_sample& sample) { return sample.x; });
+        const auto axis_y = extract_axis_values(samples, [](const density_sample& sample) { return sample.y; });
+        const auto axis_z = extract_axis_values(samples, [](const density_sample& sample) { return sample.z; });
+
+        width = static_cast<u32>(axis_x.size());
+        height = static_cast<u32>(axis_y.size());
+        depth = static_cast<u32>(axis_z.size());
+
+        if (!width || !height || !depth)
+        {
+                throw std::runtime_error("density file has invalid dimensions");
+        }
+
+        const std::size_t total_voxels = static_cast<std::size_t>(width) * height * depth;
+        if (samples.size() != total_voxels)
+        {
+                throw std::runtime_error("density file does not describe a complete grid");
+        }
+
+        bits_per_voxel = 32;
+
+        auto voxels = std::make_unique<std::byte[]>(total_voxels * sizeof(f32));
+        auto* density_values = reinterpret_cast<f32*>(voxels.get());
+        std::fill(density_values, density_values + total_voxels, 0.0f);
+
+        std::vector<bool> assigned(total_voxels, false);
+        for (const auto& sample : samples)
+        {
+                const auto x_index = find_axis_index(sample.x, axis_x);
+                const auto y_index = find_axis_index(sample.y, axis_y);
+                const auto z_index = find_axis_index(sample.z, axis_z);
+
+                const std::size_t index = x_index + static_cast<std::size_t>(width) * (y_index + static_cast<std::size_t>(height) * z_index);
+
+                if (assigned[index])
+                {
+                        throw std::runtime_error("density file contains duplicate coordinates");
+                }
+
+                assigned[index] = true;
+                density_values[index] = sample.density;
+        }
+
+        if (!std::ranges::all_of(assigned, [](bool value) { return value; }))
+        {
+                throw std::runtime_error("density file is missing samples for some grid positions");
+        }
+
+        return voxels;
 }

@@ -61,20 +61,32 @@ int main(int argc, char* argv[])
 	
 	// Select sampling function
 	std::function<f32(u32, u32, u32)> sample;
-	if (bits_per_voxel == 8)
-	{
-		sample = [=, vu8 = reinterpret_cast<const u8*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
-		{
-			return vu8[x + volume_w * (y + volume_h * z)];		
-		};
-	}
-	else if (bits_per_voxel == 16)
-	{
-		sample = [=, vu16 = reinterpret_cast<const u16*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
-		{
-			return vu16[x + volume_w * (y + volume_h * z)];		
-		};
-	}
+        if (bits_per_voxel == 8)
+        {
+                sample = [=, vu8 = reinterpret_cast<const u8*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
+                {
+                        return vu8[x + volume_w * (y + volume_h * z)];
+                };
+        }
+        else if (bits_per_voxel == 16)
+        {
+                sample = [=, vu16 = reinterpret_cast<const u16*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
+                {
+                        return vu16[x + volume_w * (y + volume_h * z)];
+                };
+        }
+        else if (bits_per_voxel == 32)
+        {
+                sample = [=, vf32 = reinterpret_cast<const f32*>(voxels.get())](u32 x, u32 y, u32 z) -> f32
+                {
+                        return vf32[x + volume_w * (y + volume_h * z)];
+                };
+        }
+        else
+        {
+                std::cerr << "unsupported voxel size" << std::endl;
+                return 1;
+        }
 	
 	// Extract isosurface
 	std::vector<vertex> vertices;
